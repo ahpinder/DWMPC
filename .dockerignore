@@ -1,0 +1,4 @@
+.git
+build
+third_party/acados
+**/__pycache__

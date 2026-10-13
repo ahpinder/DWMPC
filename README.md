@@ -20,6 +20,15 @@
 DWMPC is a library for distributed model predictive control (MPC) of quadruped robots. This repository includes the core MPC controller in cpp and example usage with the `gym-quadruped` environment in Python. The provided [acados solver](c_generated_code) has been generated for aliengo. If you want to try with different robots check this [Python](script/generate_ocp.py) file to generate a new C solver.
 
 
+## Docker (quickest way)
+A `Dockerfile` builds acados, ndcurves, DWMPC and `gym-quadruped` in one step (no submodule checkout needed):
+```bash
+docker build -t dwmpc .
+xhost +local:docker   # allow the container to open the MuJoCo viewer
+docker compose up     # runs example/sim_dwmpc.py with X11 forwarding
+# or: docker run --rm -it dwmpc bash
+```
+
 ## Dependencies
 Before proceeding with the installation, ensure that the following dependencies are available on your system:
 
