@@ -9,3 +9,12 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix
     devices:
       - /dev/dri:/dev/dri
+
+  benchmark:
+    build: .
+    image: dwmpc
+    environment:
+      - MUJOCO_GL=egl
+    volumes:
+      - ./benchmark:/opt/DWMPC/benchmark
+    command: python3 benchmark/bench_dwmpc.py --out benchmark/results.json

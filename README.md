@@ -26,6 +26,7 @@ A `Dockerfile` builds acados, ndcurves, DWMPC and `gym-quadruped` in one step (n
 docker build -t dwmpc .
 xhost +local:docker   # allow the container to open the MuJoCo viewer
 docker compose up     # runs example/sim_dwmpc.py with X11 forwarding
+docker compose run --rm benchmark   # headless timing benchmark -> benchmark/results.json
 # or: docker run --rm -it dwmpc bash
 ```
 
