@@ -1,6 +1,6 @@
 """Headless benchmark of the DWMPC controller: times mpc.run() and mpc.prepare().
 
-Usage: python3 benchmark/bench_dwmpc.py [--duration 20] [--warmup 50] [--vel 0.3] [--out results.json]
+Usage: python3 benchmark/bench_dwmpc.py [--duration 20] [--warmup 50] [--vel 0.3] [--out results.json] [--config config/config_4leg.yaml]
 """
 import argparse
 import json
@@ -22,8 +22,13 @@ parser.add_argument("--vel", type=float, default=0.3, help="forward velocity com
 parser.add_argument("--mpc-freq", type=float, default=100.0)
 parser.add_argument("--sim-freq", type=float, default=200.0)
 parser.add_argument("--seed", type=int, default=0)
+parser.add_argument("--config", default=None,
+                    help="DWMPC config file, e.g. config/config_4leg.yaml for the 4 subproblems split (default: installed config.yaml, 2 subproblems)")
 parser.add_argument("--out", default=None, help="optional JSON output path")
 args = parser.parse_args()
+
+if args.config:
+    os.environ["DWMPC_CONFIG"] = os.path.abspath(args.config)
 
 np.random.seed(args.seed)
 decimation = int(round(args.sim_freq / args.mpc_freq))

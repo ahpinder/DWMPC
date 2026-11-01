@@ -95,6 +95,18 @@ and provide the joint names in sequence and end-effector name in :
 
 Changes in the config.yaml are provided for Go1 and Go2. 
 
+### 2 or 4 subproblems
+The OCP can be split in 2 subproblems of 2 legs (`front`, `back`, default `config/config.yaml`) or in 4 subproblems of one leg each (`leg0`..`leg3`, `config/config_4leg.yaml`). Both sets of solvers are generated with
+```bash
+python3 generate_ocp.py --split 2   # front, back
+python3 generate_ocp.py --split 4   # leg0, leg1, leg2, leg3
+```
+and are linked in the same build. Select the split at runtime with the `DWMPC_CONFIG` environment variable (or `--config` in the benchmark):
+```bash
+python3 benchmark/bench_dwmpc.py                                      # 2 subproblems
+python3 benchmark/bench_dwmpc.py --config config/config_4leg.yaml     # 4 subproblems
+```
+
 ## Citing this work
 
 ```bibtex

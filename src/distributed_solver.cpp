@@ -5,7 +5,7 @@ dsolver::dsolver() : acados_interface_()
 void dsolver::init(const parameter &solver_param)
 {
     solver_param_ = solver_param;
-    acados_interface_.init(solver_param_.N_);
+    acados_interface_.init(solver_param_.N_, solver_param_.subsystems_name);
     //init to the dimension of data_ based on solver_param_
     for(auto name : solver_param_.subsystems_name)
     {
@@ -304,112 +304,76 @@ void dsolver::solve( bool &do_init,
                 }
                 problem_param.push_back(param_k);
                 ////  ============ WEIGHT  ============
-                int nw{0};
-                if(k == 0)
+                // size of the cost (y) of the subproblem, it depends on the number of joints and contacts
+                // y = [p, angle, q, dp, omega, dq, foot] (+ [tau, grf wb, consensus, inequality penalties] if k < N)
+                const int n_joints_p{static_cast<int>(solver_param_.subsystems_map_joint[problem].size())};
+                const int n_contact_p{static_cast<int>(solver_param_.subsystems_map_contact[problem].size())};
+                const int n_contact_wb{static_cast<int>(solver_param_.subsystems_map_contact["wb"].size())};
+                const int n_ineq_k{k == 0 ? solver_param_.n_ineq_0 : solver_param_.n_ineq};
+                int nw = 12 + 2*n_joints_p + 3*n_contact_p;
+                if(k < solver_param_.N_)
                 {
-                    nw = solver_param_.nw0;
-                }
-                else if(k == solver_param_.N_)
-                {
-                    nw = solver_param_.nwe;
-                }
-                else
-                {
-                    nw = solver_param_.nw;
+                    nw += n_joints_p + 3*n_contact_wb + 6 + n_ineq_k;
                 }
                 
                 if(do_init)
                 {
                     std::vector<double> weight_k(nw*nw,0);
 
+                    // the diagonal of the weight matrix is filled following the order of y
+                    int w{0};
+                    auto setWeight = [&](const double value){ weight_k[w + w*nw] = value; w++; };
+
                     // weight p 
-                    weight_k[0] = weight_vec.at("p")[0];
-                    weight_k[1 + nw] = weight_vec.at("p")[1];
-                    weight_k[2 + 2*nw] = weight_vec.at("p")[2];
+                    setWeight(weight_vec.at("p")[0]);
+                    setWeight(weight_vec.at("p")[1]);
+                    setWeight(weight_vec.at("p")[2]);
 
                     // weight quat
-                    weight_k[3 + 3*nw] = weight_vec.at("quat")[0];
-                    weight_k[4 + 4*nw] = weight_vec.at("quat")[1];
-                    weight_k[5 + 5*nw] = weight_vec.at("quat")[2];
+                    setWeight(weight_vec.at("quat")[0]);
+                    setWeight(weight_vec.at("quat")[1]);
+                    setWeight(weight_vec.at("quat")[2]);
 
                     // weight q
-                    // weight dq
-                    int count{0};
-                    for(auto idx : solver_param_.subsystems_map_joint[problem])
-                    {
-                        weight_k[6 + count + (6+count)*nw] = weight_vec.at("q")[0];
-                        weight_k[12 + 6 + count + (12+count+6)*nw] = weight_vec.at("dq")[0];
-                        count++;
-                    }
-                
+                    for(int j{0};j < n_joints_p;j++)
+                        setWeight(weight_vec.at("q")[0]);
+
                     // weight dp
-                    weight_k[6 + count + (6+count)*nw] = weight_vec.at("dp")[0];
-                    weight_k[7 + count + (7+count)*nw] = weight_vec.at("dp")[1];
-                    weight_k[8 + count + (8+count)*nw] = weight_vec.at("dp")[2];
+                    setWeight(weight_vec.at("dp")[0]);
+                    setWeight(weight_vec.at("dp")[1]);
+                    setWeight(weight_vec.at("dp")[2]);
 
                     // weight omega
-                    weight_k[9 + count + (9+count)*nw] = weight_vec.at("omega")[0];
-                    weight_k[10 + count + (10+count)*nw] = weight_vec.at("omega")[1];
-                    weight_k[11 + count + (11+count)*nw] = weight_vec.at("omega")[2];
+                    setWeight(weight_vec.at("omega")[0]);
+                    setWeight(weight_vec.at("omega")[1]);
+                    setWeight(weight_vec.at("omega")[2]);
 
-                    count+=6;
+                    // weight dq
+                    for(int j{0};j < n_joints_p;j++)
+                        setWeight(weight_vec.at("dq")[0]);
+
                     // weight foot
                     for(auto idx : solver_param_.subsystems_map_contact[problem])
                     {   
-                        if (param.at("contact_seq")[k][idx] == 1)
-                        {
-                            weight_k[12 + count + (12+count)*nw] = weight_vec.at("foot_stance")[0];
-                            weight_k[13 + count + (13+count)*nw] = weight_vec.at("foot_stance")[1];
-                            weight_k[14 + count + (14+count)*nw] = weight_vec.at("foot_stance")[2];
-                        }
-                        else
-                        {
-                            weight_k[12 + count + (12+count)*nw] = weight_vec.at("foot_swing")[0];
-                            weight_k[13 + count + (13+count)*nw] = weight_vec.at("foot_swing")[1];
-                            weight_k[14 + count + (14+count)*nw] = weight_vec.at("foot_swing")[2];
-                        }
-                        count+=3;
+                        const auto &foot_weight = param.at("contact_seq")[k][idx] == 1 ? weight_vec.at("foot_stance") : weight_vec.at("foot_swing");
+                        setWeight(foot_weight[0]);
+                        setWeight(foot_weight[1]);
+                        setWeight(foot_weight[2]);
                     }
                     if (k < solver_param_.N_)
                     {
                         // weight tau
-                        for(auto idx : solver_param_.subsystems_map_joint[problem])
-                        {
-                            weight_k[12 + count + (12+count)*nw] = weight_vec.at("tau")[0];
-                            count++;
-                        }
-                        // weight grf
-                        for(auto idx : solver_param_.subsystems_map_contact["wb"])
-                        {
-                            weight_k[12 + count + (12+count)*nw] = weight_vec.at("grf")[0];
-                            weight_k[13 + count + (13+count)*nw] = weight_vec.at("grf")[0];
-                            weight_k[14 + count + (14+count)*nw] = weight_vec.at("grf")[0];
-                            count+=3;
-                        }
+                        for(int j{0};j < n_joints_p;j++)
+                            setWeight(weight_vec.at("tau")[0]);
+                        // weight grf (of all the legs)
+                        for(int j{0};j < 3*n_contact_wb;j++)
+                            setWeight(weight_vec.at("grf")[0]);
                         // weight consensus 
-                        weight_k[15 + count + (15+count)*nw] = weight_vec.at("consensus")[0];
-                        weight_k[16 + count + (16+count)*nw] = weight_vec.at("consensus")[0];
-                        weight_k[17 + count + (17+count)*nw] = weight_vec.at("consensus")[0];
-                        weight_k[18 + count + (18+count)*nw] = weight_vec.at("consensus")[0];
-                        weight_k[19 + count + (19+count)*nw] = weight_vec.at("consensus")[0];
-                        weight_k[20 + count + (20+count)*nw] = weight_vec.at("consensus")[0];
-
-                        if(k == 0)
-                        {
-                            for(int idx{0};idx < solver_param_.n_ineq_0;idx++)
-                            {
-                                weight_k[24 + count + (24+count)*nw] = 1;
-                                count++;
-                            }
-                        }
-                        else
-                        {  
-                            for(int idx{0};idx < solver_param_.n_ineq;idx++)
-                            {
-                                weight_k[24 + count+ (24+count)*nw] = 1;
-                                count++;
-                            }
-                        }
+                        for(int j{0};j < 6;j++)
+                            setWeight(weight_vec.at("consensus")[0]);
+                        // weight inequality constraints
+                        for(int j{0};j < n_ineq_k;j++)
+                            setWeight(1);
                     }
                     problem_weight.push_back(weight_k);
                 }

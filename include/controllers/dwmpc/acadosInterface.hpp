@@ -1,12 +1,8 @@
-// #include <acados_c/ocp_nlp_interface.h>
-// #include <acados_c/external_function_interface.h>
-
-#include "acados_solver_front.h"
-#include "acados_solver_back.h"
-
+#include "acados_c/ocp_nlp_interface.h"
 
 #include <vector>
 #include <map>
+#include <memory>
 #include <cstring>
 #include <chrono>
 #include <cstdio>
@@ -14,8 +10,27 @@
 #include <csignal>
 #include <iostream>
 #include <thread>
+#include <atomic>
 #include <string>
+#include <stdexcept>
 
+// Entry points of one generated acados solver, so that any generated problem
+// (front, back, leg0, ...) can be handled by name.
+struct SolverOps
+{
+    void *(*create_capsule)();
+    int (*create)(void *capsule);
+    int (*free)(void *capsule);
+    int (*free_capsule)(void *capsule);
+    int (*solve)(void *capsule);
+    int (*update_params)(void *capsule, int stage, double *value, int np);
+    ocp_nlp_config *(*get_config)(void *capsule);
+    ocp_nlp_dims *(*get_dims)(void *capsule);
+    ocp_nlp_in *(*get_in)(void *capsule);
+    ocp_nlp_out *(*get_out)(void *capsule);
+    ocp_nlp_solver *(*get_solver)(void *capsule);
+    void *(*get_opts)(void *capsule);
+};
 
 class acadosInterface {
     
@@ -23,7 +38,8 @@ class acadosInterface {
 
         acadosInterface();
         ~acadosInterface();
-        void init(const int N);
+        // create the solvers of the given problems ("wb" is not a solver and is ignored)
+        void init(const int N, const std::vector<std::string> &problems);
         // setter
         void setInitialCondition(std::vector<double> &initial_condition,const std::string &problem);
         void warmstart(const std::string &problem);
@@ -35,40 +51,33 @@ class acadosInterface {
         void prepare();
         // getter
         void UpdatePrediction(std::vector<std::vector<double>> &x,std::vector<std::vector<double>> &u, const std::string &problem);   
-        // void getSolution(Eigen::VectorXd &solution);
 
     private:
 
-        //internal variables
+        struct Problem
+        {
+            const SolverOps *ops{nullptr};
+            void *capsule{nullptr};
+            ocp_nlp_config *config{nullptr};
+            ocp_nlp_dims *dims{nullptr};
+            ocp_nlp_in *in{nullptr};
+            ocp_nlp_out *out{nullptr};
+            ocp_nlp_solver *solver{nullptr};
+            void *opts{nullptr};
+            int nx{0};
+            int nu{0};
+            int status{1};
+            std::atomic_bool start{false};
+            std::thread worker;
+        };
 
-        // acados objects
-        front_solver_capsule *front_capsule_; 
-        back_solver_capsule *back_capsule_; 
+        std::map<std::string,std::unique_ptr<Problem>> problems_;
 
-        std::map<std::string,ocp_nlp_config> nlp_config;
-        std::map<std::string,ocp_nlp_dims> nlp_dims;
-        std::map<std::string,ocp_nlp_in> nlp_in;
-        std::map<std::string,ocp_nlp_out> nlp_out;
-        std::map<std::string,ocp_nlp_out> nlp_out_sens;
-        std::map<std::string,ocp_nlp_solver> nlp_solver;
-        //TO DO try to make this a map to 
-        void *nlp_opts_front;
-        void *nlp_opts_back;
+        int N_{0}; // prediction horizon
 
-        int N_; // prediction horizon
-        int nx_;
-        int nu_;
-        std::map<std::string,int> status_;
-    
-        // //internal functions
-        void solvefront();
-        void solveback();
+        void work(Problem &problem);
+        void runAll(int rti_phase);
         void waitWorkers();
-        bool run{true};
-
-        std::atomic_bool start_front{false};
-        std::atomic_bool start_back{false};
-
-        std::thread front;
-        std::thread back;
+        void clear();
+        std::atomic_bool run{true};
 };

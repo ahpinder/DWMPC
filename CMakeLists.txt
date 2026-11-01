@@ -20,6 +20,13 @@ find_package(pybind11 CONFIG REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Development)
 add_subdirectory(third_party/acados)
 
+# generated acados solvers: 2 subproblems (front, back) and 4 subproblems (leg0..leg3)
+set(SOLVER_NAMES front back leg0 leg1 leg2 leg3)
+set(SOLVER_LIBS "")
+foreach(solver ${SOLVER_NAMES})
+	list(APPEND SOLVER_LIBS ${CMAKE_CURRENT_SOURCE_DIR}/c_generated_code/libacados_ocp_solver_${solver}.so)
+endforeach()
+
 # Create the library for the module
 add_library(${MODULE_LIBRARY_NAME} SHARED
 	src/${PLUGIN_NAME}.cpp
@@ -44,8 +51,7 @@ target_link_directories(${MODULE_LIBRARY_NAME}
 target_link_libraries(${MODULE_LIBRARY_NAME}
 	PUBLIC
 	acados
-	${CMAKE_CURRENT_SOURCE_DIR}/c_generated_code/libacados_ocp_solver_front.so
-	${CMAKE_CURRENT_SOURCE_DIR}/c_generated_code/libacados_ocp_solver_back.so
+	${SOLVER_LIBS}
 	yaml-cpp
 	Eigen3::Eigen
 	# add other linked libraries here
@@ -78,8 +84,7 @@ install(
 )
 
 install(
-	FILES       ${CMAKE_CURRENT_SOURCE_DIR}/c_generated_code/libacados_ocp_solver_front.so
-				${CMAKE_CURRENT_SOURCE_DIR}/c_generated_code/libacados_ocp_solver_back.so
+	FILES       ${SOLVER_LIBS}
 	COMPONENT   ${MODULE_LIBRARY_NAME}
 	DESTINATION /usr/lib/dls2/controllers/${PLUGIN_NAME}
 )

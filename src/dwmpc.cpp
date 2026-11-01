@@ -2,7 +2,13 @@
 
 namespace controllers
 {
-    Dwmpc::Dwmpc() : ocp_(), config(YAML::LoadFile("/usr/include/dls2/controllers/dwmpc/config/config.yaml"))
+    // DWMPC_CONFIG selects another configuration file (e.g. config_4leg.yaml for the 4 subproblems split)
+    static std::string configPath()
+    {
+        const char *path = std::getenv("DWMPC_CONFIG");
+        return path ? path : "/usr/include/dls2/controllers/dwmpc/config/config.yaml";
+    }
+    Dwmpc::Dwmpc() : ocp_(), config(YAML::LoadFile(configPath()))
     {}
     Dwmpc::~Dwmpc()
     { }
@@ -368,19 +374,18 @@ namespace controllers
                 }
                 sphere_radius.push_back(_radius);
             }
-            _pos[0] = data["front"].p[k][0];
-            _pos[1] = data["front"].p[k][1];
-            _pos[2] = data["front"].p[k][2];
-            sphere_pos.push_back(_pos);
-            sphere_color.push_back({0.25, 0.25, 0.25, static_cast<double>((N_ - k)) / static_cast<double>(2*N_)+0.3});
-            sphere_radius.push_back(_radius);
-        
-            _pos[0] = data["back"].p[k][0];
-            _pos[1] = data["back"].p[k][1];
-            _pos[2] = data["back"].p[k][2];
-            sphere_pos.push_back(_pos);
-            sphere_color.push_back({0.25, 0.25, 0.25, static_cast<double>((N_ - k)) / static_cast<double>(2*N_)+0.3});
-            sphere_radius.push_back(_radius);
+            // predicted trunk position of each subproblem
+            for(const auto &subsystem : data)
+            {
+                if(subsystem.first == "wb")
+                    continue;
+                _pos[0] = subsystem.second.p[k][0];
+                _pos[1] = subsystem.second.p[k][1];
+                _pos[2] = subsystem.second.p[k][2];
+                sphere_pos.push_back(_pos);
+                sphere_color.push_back({0.25, 0.25, 0.25, static_cast<double>((N_ - k)) / static_cast<double>(2*N_)+0.3});
+                sphere_radius.push_back(_radius);
+            }
     
         }
          for(int leg{0};leg<n_contact_wb_;leg++)

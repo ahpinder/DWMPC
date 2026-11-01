@@ -71,8 +71,8 @@ class ocp_formulation:
         tau = cs.SX.sym("joint_torque",n_joints,1) #joint torque
 
         grf = cs.SX.sym("ground_reaction_forces",3*n_contact,1) #Ground Reaction Forces
-        grf_aux = cs.SX.sym("ground_reaction_forces_aux",3*n_contact,1) #Ground Reaction Forces (same dimension of the )
-        grf_old = cs.SX.sym("grf_old",12,1)
+        grf_aux = cs.SX.sym("ground_reaction_forces_aux",3*(n_contact_wb-n_contact),1) #correction of the GRF of the legs outside the subsystem
+        grf_old = cs.SX.sym("grf_old",3*n_contact_wb,1)
 
         foot_ref = cs.SX.sym("foot_position_reference",3*(n_contact),1) #position of the leg
         contact_state = cs.SX.sym("contact_state",n_contact_wb,1) #contact state 1 in contact 0 if not
@@ -89,7 +89,7 @@ class ocp_formulation:
         self.nx_ = nx
 
         control = cs.vertcat(tau,grf,grf_aux)
-        nu =  n_joints + 3*n_contact + 3*n_contact
+        nu =  n_joints + 3*n_contact + 3*(n_contact_wb-n_contact)
         # control = cs.vertcat(tau,grf)
         # nu =  n_joints + 3*n_contact
         self.nu_ = nu
@@ -105,7 +105,7 @@ class ocp_formulation:
                                          n_joints_wb+
                                          4 +
                                          1 +
-                                         12,1))
+                                         3*n_contact_wb,1))
 
                                             ##========  DYNAMICS ======== ##
 
@@ -121,10 +121,11 @@ class ocp_formulation:
 
         q_wb = cs.vertcat(q_aux[:3*s_idx],q,q_aux[n_joints+3*s_idx:]) #add the auxiliary joints to the state joints
         dq_wb = cs.vertcat(dq_aux[:3*s_idx],dq,dq_aux[n_joints+3*s_idx:]) #add the auxiliary joints speed to the state joints
-        if s_idx == 0:
-            grf_wb = cs.vertcat(grf,grf_old[6:]+grf_aux)
-        else:
-            grf_wb = cs.vertcat(grf_old[:6]+grf_aux,grf)
+        # the legs outside the subsystem use the previous iterate corrected by grf_aux
+        n_before = 3*s_idx
+        grf_wb = cs.vertcat(grf_old[:n_before]+grf_aux[:n_before],
+                            grf,
+                            grf_old[n_before+3*n_contact:]+grf_aux[n_before:])
         w_H_b =SE3(p,quat).transform()
 
         # alpha0 = np.array([0.3,0.2,0.28,0.3,0.2,0.28])
@@ -135,7 +136,7 @@ class ocp_formulation:
         torque = cs.vertcat(np.zeros((6,1)),tau)
         ext_torque = cs.SX.zeros(6+n_joints)
         for idx in range(0,n_contact_wb) :
-            if idx == s_idx or idx == (n_contact-1)+s_idx:
+            if s_idx <= idx < s_idx+n_contact:
                 J = self.kinDyn_wb_.jacobian_fun(self.contact_frame_name_list_wb_[idx])
                 torque_wb = (contact_state[idx]*J(w_H_b,q_wb)[:3,:].T@grf_wb[3*idx:3+3*idx])
                 ext_torque[:6] += torque_wb[:6]
@@ -351,14 +352,14 @@ class ocp_formulation:
         weight_torque = 1e-2*np.ones(n_joints)
 
         ### CONTROL INPUT REGULARIZATION COST
-        weight_grond_reaction_forces = 1e-2*np.ones(3*n_contact)
+        weight_grond_reaction_forces = 1e-2*np.ones(3*n_contact_wb)
         rho = [2]
         ### CONSENSUS COST
         weight_consensus_wrench = np.array(rho*6)
 
 
         Q = np.concatenate((weight_postion,weight_angle,weight_joint,weight_linear_speed,weight_angular_speed,weight_joint_vel,weight_foot_pos))
-        R = np.concatenate((weight_torque,weight_grond_reaction_forces,weight_grond_reaction_forces,weight_consensus_wrench))
+        R = np.concatenate((weight_torque,weight_grond_reaction_forces,weight_consensus_wrench))
         W = np.diag(np.concatenate((Q,R)))
 
         ocp.cost.W = W
@@ -410,63 +411,30 @@ class ocp_formulation:
 
         return ocp_solver
     
-args = {}
-make_model = True
-N = 15
-dt = 0.01
-problems = []
+if __name__ == "__main__":
+    import argparse
+    import os
 
-                                ###################### FRONT MODEL ########################
-# # The joint list
-# args['joints_name_list'] = ['FR_hip_joint', 'FR_thigh_joint', 'FR_calf_joint','FL_hip_joint', 'FL_thigh_joint', 'FL_calf_joint']
-# #list of the frame for the contacts
-# args['contact_frame_name_list'] = ['FR_foot','FL_foot']
-# #path for the complete model
-# args['model_path_wb'] = '/home/iit.local/lamatucci/DWMPC/urdf/go1.urdf'
-# # The joint list
-# args['joints_name_list_wb'] = ['FR_hip_joint', 'FR_thigh_joint', 'FR_calf_joint',
-#     'FL_hip_joint', 'FL_thigh_joint', 'FL_calf_joint',
-#     'RR_hip_joint', 'RR_thigh_joint', 'RR_calf_joint',
-#     'RL_hip_joint', 'RL_thigh_joint', 'RL_calf_joint'
-# ]
-# args['contact_frame_name_list_wb'] = ['FR_foot','FL_foot','RR_foot','RL_foot']
+    parser = argparse.ArgumentParser(description="Generate the acados solvers of the distributed OCP")
+    parser.add_argument("--split", type=int, choices=[2, 4], default=2,
+                        help="2: front/back subproblems (2 legs each), 4: leg0..leg3 subproblems (1 leg each)")
+    cli = parser.parse_args()
 
-args['joints_name_list'] = ['FL_hip_joint', 'FL_thigh_joint', 'FL_calf_joint','FR_hip_joint', 'FR_thigh_joint', 'FR_calf_joint']
-#list of the frame for the contacts
-args['contact_frame_name_list'] = ['FL_foot','FR_foot']
-#path for the complete model
-args['model_path_wb'] = '/home/iit.local/lamatucci/DWMPC/urdf/aliengo.urdf'
-# The joint list
-args['joints_name_list_wb'] = [
-    'FL_hip_joint', 'FL_thigh_joint', 'FL_calf_joint',
-    'FR_hip_joint', 'FR_thigh_joint', 'FR_calf_joint',
-    'RL_hip_joint', 'RL_thigh_joint', 'RL_calf_joint',
-    'RR_hip_joint', 'RR_thigh_joint', 'RR_calf_joint',
-]
-args['contact_frame_name_list_wb'] = ['FL_foot','FR_foot','RL_foot','RR_foot']
+    args = {}
+    args['N'] = 15 # Horizon lenght
+    args['dt'] = 0.01 # delta time between the integration node
+    args['model_path_wb'] = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'urdf', 'aliengo.urdf')
+    legs = ['FL', 'FR', 'RL', 'RR'] # order of the legs in the whole body model
+    args['joints_name_list_wb'] = [f'{leg}_{joint}_joint' for leg in legs for joint in ('hip', 'thigh', 'calf')]
+    args['contact_frame_name_list_wb'] = [f'{leg}_foot' for leg in legs]
 
-args['s_idx'] = 0
+    if cli.split == 2:
+        subproblems = {'front': [0, 1], 'back': [2, 3]}
+    else:
+        subproblems = {f'leg{i}': [i] for i in range(4)}
 
-joints_name_list = args['joints_name_list_wb']
-contact_frame_name_list = args['contact_frame_name_list_wb']
-model_path = args['model_path_wb']
-n_contact = len(contact_frame_name_list)
-# robot state dimension
-n_joints = len(joints_name_list)
-args['N'] = N # Horizon lenght
-args['dt'] = dt # delta time between the integration node
-
-front = ocp_formulation(args)
-front_solver = front.getOptimalProblem(model_name = "front")
-                                ###################### BACK MODEL ########################
-# The joint list
-args['joints_name_list'] = [
-    'RL_hip_joint', 'RL_thigh_joint', 'RL_calf_joint',
-    'RR_hip_joint', 'RR_thigh_joint', 'RR_calf_joint']
-#list of the frame for the contacts
-args['contact_frame_name_list'] = ['RL_foot','RR_foot']
-
-args['s_idx'] = 2
-
-back = ocp_formulation(args)
-back_solver = back.getOptimalProblem(model_name = "back")
+    for name, leg_ids in subproblems.items():
+        args['joints_name_list'] = [f'{legs[i]}_{joint}_joint' for i in leg_ids for joint in ('hip', 'thigh', 'calf')]
+        args['contact_frame_name_list'] = [f'{legs[i]}_foot' for i in leg_ids]
+        args['s_idx'] = leg_ids[0] # first leg of the subsystem in the whole body model
+        ocp_formulation(args).getOptimalProblem(model_name = name)

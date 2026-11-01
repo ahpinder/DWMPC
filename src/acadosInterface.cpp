@@ -1,305 +1,206 @@
 #include "controllers/dwmpc/acadosInterface.hpp"
 
-/**
- * Constructor for the acadosInterface class.
+#include "acados_solver_front.h"
+#include "acados_solver_back.h"
+#include "acados_solver_leg0.h"
+#include "acados_solver_leg1.h"
+#include "acados_solver_leg2.h"
+#include "acados_solver_leg3.h"
 
- */
-acadosInterface::acadosInterface() : front(&acadosInterface::solvefront,this), back(&acadosInterface::solveback,this)
-{   // this is made for the quadruped robot defined in front and back
-    // TO DO make it general (hard because acados calls the function with the name of the problem)
-    front_capsule_ = front_acados_create_capsule();
-    back_capsule_ = back_acados_create_capsule();
+#define SOLVER_OPS(NAME)                                                                                   \
+    {#NAME, SolverOps{                                                                                     \
+        []() { return static_cast<void *>(NAME##_acados_create_capsule()); },                              \
+        [](void *c) { return NAME##_acados_create(static_cast<NAME##_solver_capsule *>(c)); },             \
+        [](void *c) { return NAME##_acados_free(static_cast<NAME##_solver_capsule *>(c)); },              \
+        [](void *c) { return NAME##_acados_free_capsule(static_cast<NAME##_solver_capsule *>(c)); },      \
+        [](void *c) { return NAME##_acados_solve(static_cast<NAME##_solver_capsule *>(c)); },             \
+        [](void *c, int k, double *p, int np) {                                                            \
+            return NAME##_acados_update_params(static_cast<NAME##_solver_capsule *>(c), k, p, np); },      \
+        [](void *c) { return NAME##_acados_get_nlp_config(static_cast<NAME##_solver_capsule *>(c)); },    \
+        [](void *c) { return NAME##_acados_get_nlp_dims(static_cast<NAME##_solver_capsule *>(c)); },      \
+        [](void *c) { return NAME##_acados_get_nlp_in(static_cast<NAME##_solver_capsule *>(c)); },        \
+        [](void *c) { return NAME##_acados_get_nlp_out(static_cast<NAME##_solver_capsule *>(c)); },       \
+        [](void *c) { return NAME##_acados_get_nlp_solver(static_cast<NAME##_solver_capsule *>(c)); },    \
+        [](void *c) { return NAME##_acados_get_nlp_opts(static_cast<NAME##_solver_capsule *>(c)); }}}
 
-    int status_front = front_acados_create(front_capsule_);
-    int status_back = back_acados_create(back_capsule_);
-
-    nlp_config["front"] = *front_acados_get_nlp_config(front_capsule_);
-    nlp_dims["front"] = *front_acados_get_nlp_dims(front_capsule_);
-    nlp_in["front"] = *front_acados_get_nlp_in(front_capsule_);
-    nlp_out["front"] = *front_acados_get_nlp_out(front_capsule_);
-    nlp_out_sens["front"] = *front_acados_get_nlp_out(front_capsule_);
-    nlp_solver["front"] = *front_acados_get_nlp_solver(front_capsule_);
-    nlp_opts_front = front_acados_get_nlp_opts(front_capsule_);
-
-    nlp_config["back"] = *back_acados_get_nlp_config(back_capsule_);
-    nlp_dims["back"] = *back_acados_get_nlp_dims(back_capsule_);
-    nlp_in["back"] = *back_acados_get_nlp_in(back_capsule_);
-    nlp_out["back"] = *back_acados_get_nlp_out(back_capsule_);
-    nlp_out_sens["back"] = *back_acados_get_nlp_out(back_capsule_);
-    nlp_solver["back"] = *back_acados_get_nlp_solver(back_capsule_);
-    nlp_opts_back = back_acados_get_nlp_opts(back_capsule_);
-
-    status_["front"] = 1;
-    status_["back"] = 1;
-
-    //TODo make the following a map
-    nx_ = *nlp_dims["front"].nx;
-    nu_ = *nlp_dims["front"].nu;
-
+// generated solvers available by name (see generate_ocp.py)
+static const std::map<std::string,SolverOps> &solverRegistry()
+{
+    static const std::map<std::string,SolverOps> registry{
+        SOLVER_OPS(front), SOLVER_OPS(back),
+        SOLVER_OPS(leg0), SOLVER_OPS(leg1), SOLVER_OPS(leg2), SOLVER_OPS(leg3)};
+    return registry;
 }
+
+acadosInterface::acadosInterface()
+{}
 acadosInterface::~acadosInterface()
 {
-    run = false;
-    start_front.store(true);
-    start_back.store(true);
-    start_front.notify_one();
-    start_back.notify_one();
-    front.join();
-    back.join();
-    front_acados_free_capsule(front_capsule_);
-    back_acados_free_capsule(back_capsule_);
+    clear();
 }
-void acadosInterface::init(const int N)
+void acadosInterface::clear()
 {
+    run = false;
+    for (auto &entry : problems_)
+    {
+        entry.second->start.store(true);
+        entry.second->start.notify_one();
+    }
+    for (auto &entry : problems_)
+    {
+        Problem &p = *entry.second;
+        if (p.worker.joinable())
+            p.worker.join();
+        p.ops->free(p.capsule);
+        p.ops->free_capsule(p.capsule);
+    }
+    problems_.clear();
+}
+void acadosInterface::init(const int N, const std::vector<std::string> &problems)
+{
+    clear();
+    run = true;
     N_ = N;
-    // int n_qp_solver_warm_start = 2;
-    // ocp_nlp_solver_opts_set(&nlp_config["front"], nlp_opts_front, "qp_warm_start",&n_qp_solver_warm_start);
-    // ocp_nlp_solver_opts_set(&nlp_config["back"], nlp_opts_back, "qp_warm_start",&n_qp_solver_warm_start);
-    // char* hpipm_mode = "speed_abs";
-    // ocp_nlp_solver_opts_set(&nlp_config["front"], nlp_opts_front, "qp_hpipm_mode", hpipm_mode);
-    // ocp_nlp_solver_opts_set(&nlp_config["back"], nlp_opts_back, "qp_hpipm_mode", hpipm_mode);
+    for (const auto &name : problems)
+    {
+        if (name == "wb")
+            continue;
+        auto it = solverRegistry().find(name);
+        if (it == solverRegistry().end())
+            throw std::runtime_error("acadosInterface: no generated solver named '" + name + "'");
 
+        auto p = std::make_unique<Problem>();
+        p->ops = &it->second;
+        p->capsule = p->ops->create_capsule();
+        if (p->ops->create(p->capsule) != 0)
+            throw std::runtime_error("acadosInterface: could not create the solver '" + name + "'");
+        p->config = p->ops->get_config(p->capsule);
+        p->dims = p->ops->get_dims(p->capsule);
+        p->in = p->ops->get_in(p->capsule);
+        p->out = p->ops->get_out(p->capsule);
+        p->solver = p->ops->get_solver(p->capsule);
+        p->opts = p->ops->get_opts(p->capsule);
+        p->nx = *p->dims->nx;
+        p->nu = *p->dims->nu;
+        Problem &ref = *p;
+        problems_[name] = std::move(p);
+        ref.worker = std::thread(&acadosInterface::work, this, std::ref(ref));
+    }
 }
 /**
  * Set the initial condition for the optimization problem.
  *
  * @param initial_condition The initial condition vector.
- * @param problem The name of the problem ("front" or "back").
+ * @param problem The name of the problem (e.g. "front" or "leg0").
  */
 void acadosInterface::setInitialCondition(std::vector<double> &initial_condition,const std::string &problem)
 {
-    int idxbx0[nx_]; // Array to store the indices of the box constraints
-    // double lbx0[nx_]; // Array to store the lower bounds of the box constraints
-    // double ubx0[nx_]; // Array to store the upper bounds of the box constraints
+    Problem &p = *problems_.at(problem);
+    std::vector<int> idxbx0(p.nx);
 
-    // Set the indices, lower bounds, and upper bounds for the box constraints
-    for (int counter{0};counter<nx_;counter++)
+    for (int counter{0};counter<p.nx;counter++)
     {
         idxbx0[counter] = counter;
-        // lbx0[counter] = initial_condition[counter];
-        // ubx0[counter] = initial_condition[counter];
     }
 
-
     // Set the initial condition constraints for the optimization problem
-    ocp_nlp_constraints_model_set(&nlp_config[problem], &nlp_dims[problem], &nlp_in[problem], 0, "idxbx", idxbx0);
-    ocp_nlp_constraints_model_set(&nlp_config[problem], &nlp_dims[problem], &nlp_in[problem], 0, "lbx", initial_condition.data());
-    ocp_nlp_constraints_model_set(&nlp_config[problem], &nlp_dims[problem], &nlp_in[problem], 0, "ubx", initial_condition.data());
+    ocp_nlp_constraints_model_set(p.config, p.dims, p.in, 0, "idxbx", idxbx0.data());
+    ocp_nlp_constraints_model_set(p.config, p.dims, p.in, 0, "lbx", initial_condition.data());
+    ocp_nlp_constraints_model_set(p.config, p.dims, p.in, 0, "ubx", initial_condition.data());
 }
 /**
  * Set the parameter values for the optimization problem.
  *
  * @param parameter The parameter values for each time step size [np X N].
  * @param np The number of parameters per stage.
- * @param problem The name of the problem ("front" or "back").
+ * @param problem The name of the problem.
  */
 void acadosInterface::setParameter(std::vector<std::vector<double>> &parameter, const int np, const std::string &problem)
 {
-    // This is written for the case of the quadruped robot defined in front and back
-    // generalized version needs to be written need a genral version of *_acados_update_params
-    // double p[np]; // Array to store the parameter values
-
-    if (problem == "front")
+    Problem &p = *problems_.at(problem);
+    for (int k = 0; k <= N_; k++)
     {
-        for (int k = 0; k <= N_; k++)
-        {
-            // std::copy(parameter[k].begin(), parameter[k].end(), p);
-            front_acados_update_params(front_capsule_, k,parameter[k].data(), np); // Update the parameter values for the front problem
-        }
-    }
-    else if (problem == "back")
-    {
-        for (int k = 0; k <= N_; k++)
-        {
-            // std::copy(parameter[k].begin(), parameter[k].end(), p);
-            back_acados_update_params(back_capsule_, k, parameter[k].data(), np); // Update the parameter values for the back problem
-        }
+        p.ops->update_params(p.capsule, k, parameter[k].data(), np);
     }
 }
 void acadosInterface::setConstraints( std::vector<std::vector<double>> &constraint, const int nlh0, const int nlh, const std::string &problem)
 {
-    // double lh0[nlh0];
-    // double lh[nlh]; 
-    
+    Problem &p = *problems_.at(problem);
     for (int k = 0; k <= N_; k++)
     { 
-        if(k == 0)
-        {   
-            // std::copy(constraint[k].begin(), constraint[k].end(), lh0);
-            ocp_nlp_constraints_model_set(&nlp_config[problem],
-            &nlp_dims[problem],&nlp_in[problem],k,"lh", constraint[k].data());
-        }
-        else
-        {   
-            // std::copy(constraint[k].begin(), constraint[k].end(), lh);
-            ocp_nlp_constraints_model_set(&nlp_config[problem],
-            &nlp_dims[problem],&nlp_in[problem],k,"lh", constraint[k].data());
-        }
+        ocp_nlp_constraints_model_set(p.config, p.dims, p.in, k, "lh", constraint[k].data());
     }
 }
 /**
  * Set the weight matrix for the cost function of the optimization problem.
  *
  * @param weight The weight matrix for each time step size [nx+nu X nx+nu] X N [nx X nx] X 1 for the last stage.
- * @param problem The name of the problem ("front" or "back").
+ * @param problem The name of the problem.
  */
 void acadosInterface::setWeight(std::vector<std::vector<double>> &weight,const int &n_w0,const int &n_w, const int &n_we,const std::string &problem)
 {
-
-    // double W_0[n_w0*n_w0];
-
-    // memset(W_0, 0.0, sizeof(W_0));
-        // for (int r = 0; r < n_w0; r++)
-        // {
-        //     W0_[r+r*(n_w0)] = weight[0][r];
-        // }
-    // ocp_nlp_cost_model_set( &nlp_config[problem], &nlp_dims[problem], &nlp_in[problem], 0, "W", W0_);
-
-    // double W[n_w*n_w];
-
-    // memset(W, 0.0, sizeof(W));
-
+    Problem &p = *problems_.at(problem);
     for(int k{0}; k < N_+1;k++)
     {
-        // for (int r = 0; r < n_w ; r++)
-        // {
-        //     W_[r+r*(n_w)] = weight[k][r];
-        // }
-        ocp_nlp_cost_model_set( &nlp_config[problem], &nlp_dims[problem], &nlp_in[problem], k, "W", weight[k].data());
+        ocp_nlp_cost_model_set(p.config, p.dims, p.in, k, "W", weight[k].data());
     }
-    // double W_e[n_we*n_we];
-    // memset(W_e, 0.0, sizeof(W_e));
-    //     for (int r = 0; r < n_we; r++)
-    //     {
-    //         W_e[r+r*(n_we)] = weight[N_][r];
-    //     }
-    // ocp_nlp_cost_model_set( &nlp_config[problem], &nlp_dims[problem], &nlp_in[problem], N_, "W", W_e);
 }
 
 /**
  * Set the reference values for the optimization problem.
  *
  * @param reference The reference values for each time step size [nx_ref+nu_ref X N] and [nx_ref X 1] for the last stage.
- * @param nx__ref The number of states related element in the reference vector.
- * @param nu__ref The number of inputs related element in the reference vector.
- * @param problem The name of the problem ("front" or "back").
+ * @param problem The name of the problem.
  */
 void acadosInterface::setReference(std::vector<std::vector<double>> &reference, const int n_ref0, const int n_ref, const int n_ref_e, const std::string &problem)
 {   
-    // double y_ref0[n_ref0];
-    // std::copy(reference[0].begin(), reference[0].end(), y_ref0);
-    ocp_nlp_cost_model_set(&nlp_config[problem], &nlp_dims[problem], &nlp_in[problem], 0, "yref", reference[0].data());
-
-    // The reference is a vector of vectors of size (nx_ref+nu_ref) X N and nx_ref X 1 for the last stage
-    // double y_ref[n_ref]; // Array to store the reference values
-    // Set the reference for each stage of the optimization problem
-    for (int k = 1; k < N_; k++)
+    Problem &p = *problems_.at(problem);
+    for (int k = 0; k <= N_; k++)
     {
-        // Copy the reference values to the y_ref array
-        // std::copy(reference[k].begin(), reference[k].end(), y_ref);
-        // Set the reference for the current stage of the optimization problem
-        ocp_nlp_cost_model_set(&nlp_config[problem], &nlp_dims[problem], &nlp_in[problem], k, "yref", reference[k].data());
+        ocp_nlp_cost_model_set(p.config, p.dims, p.in, k, "yref", reference[k].data());
     }
-    // Set the reference for the last stage of the optimization problem
-    // double y_ref_e[n_ref_e];
-    // std::copy(reference[N_].begin(), reference[N_].end(), y_ref_e);
-    ocp_nlp_cost_model_set(&nlp_config[problem], &nlp_dims[problem], &nlp_in[problem], N_, "yref", reference[N_].data());
 }
 
-
 /**
- * Solve the optimization problem for the quadruped robot defined in front and back.
- *
- * This function sets the RTI phase to 2, configures the solver options for both "front" and "back" problems,
- * and solves them concurrently using separate threads.
- *
- * Note: The generalized version of this function needs to be implemented to iterate over multiple problems
- * and call the general solve function.
+ * Run one RTI phase of every problem, each one in its own thread, and wait for all of them.
+ */
+void acadosInterface::runAll(int rti_phase)
+{
+    for (auto &entry : problems_)
+    {
+        Problem &p = *entry.second;
+        ocp_nlp_solver_opts_set(p.config, p.opts, "rti_phase", &rti_phase);
+    }
+    for (auto &entry : problems_)
+    {
+        entry.second->start.store(true);
+        entry.second->start.notify_one();
+    }
+    waitWorkers();
+}
+/**
+ * Solve (feedback phase) all the problems.
  */
 void acadosInterface::solve()
 {
-    int rti_phase = 2; // Set the RTI phase to 2
-
-    // Configure solver options for "front" problem
-    ocp_nlp_solver_opts_set(&nlp_config["front"], nlp_opts_front, "rti_phase", &rti_phase);
-
-    // Configure solver options for "back" problem
-    ocp_nlp_solver_opts_set(&nlp_config["back"], nlp_opts_back, "rti_phase", &rti_phase);
-
-    // Solve "front" problem in a separate thread
-    start_front.store(true);
-    // Solve "back" problem in a separate thread
-    start_back.store(true);
-
-    start_front.notify_one();
-    start_back.notify_one();
-    // // wait work of threads
-    waitWorkers();
-    for(auto leg : {"front","back"})
-    {   
-        double elapsed_time;
-        int iter_qp;
-        ocp_nlp_get(&nlp_config[leg],&nlp_solver[leg], "time_tot", &elapsed_time);
-        ocp_nlp_get(&nlp_config[leg],&nlp_solver[leg], "qp_iter", &iter_qp);
-        
-        // if(elapsed_time > 0.006)
-        // {
-        //     std::cout << "time for solution of " << leg << " = " << elapsed_time << std::endl;
-        //     std::cout << "iter qp for solution of " << leg << " = " << iter_qp << std::endl;
-        // }
-    }
-
+    runAll(2);
 }
 /**
- * Prepare the optimization problem for solving.
- *
- * This function sets the RTI phase to 1, configures the solver options for both "front" and "back" problems,
- * and solves them concurrently using separate threads.
- *
- * Note: The generalized version of this function needs to be implemented to iterate over multiple problems
- * and call the general solve function.
+ * Prepare (preparation phase) all the problems.
  */
 void acadosInterface::prepare()
 {
-    int rti_phase = 1; // Set the RTI phase to 1
-
-    // Configure solver options for "front" problem
-    ocp_nlp_solver_opts_set(&nlp_config["front"], nlp_opts_front, "rti_phase", &rti_phase);
-
-    // Configure solver options for "back" problem
-    ocp_nlp_solver_opts_set(&nlp_config["back"], nlp_opts_back, "rti_phase", &rti_phase);
-
-     // Solve "front" problem in a separate thread
-    start_front.store(true);
-    // Solve "back" problem in a separate thread
-    start_back.store(true);
-
-    start_front.notify_one();
-    start_back.notify_one();
-    // wait work of threads
-    waitWorkers();
-    // TODO: Implement iteration over multiple problems and call general solve function
+    runAll(1);
 }
-void acadosInterface::solvefront()
+void acadosInterface::work(Problem &p)
 {
     while(run)
     {
-        start_front.wait(false);
+        p.start.wait(false);
         if(!run)
             break;
-        status_["front"] = front_acados_solve(front_capsule_);
-        start_front.store(false);
-    }
-}
-void acadosInterface::solveback()
-{
-    while(run)
-    {
-        start_back.wait(false);
-        if(!run)
-            break;
-        status_["back"] = back_acados_solve(back_capsule_);
-        start_back.store(false);
+        p.status = p.ops->solve(p.capsule);
+        p.start.store(false);
     }
 }
 
@@ -311,55 +212,47 @@ void acadosInterface::solveback()
  *
  * @param x The vector of predicted states [nx X N+1].
  * @param u The vector of predicted inputs [nu X N].
- * @param problem The name of the problem ("front" or "back").
+ * @param problem The name of the problem.
  */
 void acadosInterface::UpdatePrediction(std::vector<std::vector<double>> &x, std::vector<std::vector<double>> &u, const std::string &problem)
 {
-    double xtraj[nx_]; // Temporary array to store the predicted states
-    double utraj[nu_]; // Temporary array to store the predicted inputs
-
-    std::vector<double> xtraj_vec(nx_);
-    std::vector<double> utraj_vec(nu_);
+    Problem &p = *problems_.at(problem);
+    std::vector<double> xtraj(p.nx);
+    std::vector<double> utraj(p.nu);
 
     for (int k{0}; k < N_; k++)
     {
-        // Get the predicted state at time step k
-        ocp_nlp_out_get(&nlp_config[problem], &nlp_dims[problem], &nlp_out[problem], k, "x", &xtraj);
-        xtraj_vec.assign(xtraj, xtraj + nx_); // Update the state vector at time step k
-        x.push_back(xtraj_vec);
-        // Get the predicted input at time step k
-        ocp_nlp_out_get(&nlp_config[problem], &nlp_dims[problem], &nlp_out[problem], k, "u", &utraj);
-        utraj_vec.assign(utraj, utraj + nu_); // Update the input vector at time step k
-        u.push_back(utraj_vec);
+        ocp_nlp_out_get(p.config, p.dims, p.out, k, "x", xtraj.data());
+        x.push_back(xtraj);
+        ocp_nlp_out_get(p.config, p.dims, p.out, k, "u", utraj.data());
+        u.push_back(utraj);
     }
 
     // Get the predicted state at the last time step N
-    ocp_nlp_out_get(&nlp_config[problem], &nlp_dims[problem], &nlp_out[problem], N_, "x", &xtraj);
-    xtraj_vec.assign(xtraj, xtraj + nx_); // Update the state vector at the last time step
-    x.push_back(xtraj_vec);
-
+    ocp_nlp_out_get(p.config, p.dims, p.out, N_, "x", xtraj.data());
+    x.push_back(xtraj);
 }
 void acadosInterface::warmstart(const std::string &problem)
 {
-    double xtraj[nx_]; // Temporary array to store the predicted states
-    double utraj[nu_]; // Temporary array to store the predicted inputs
+    Problem &p = *problems_.at(problem);
+    std::vector<double> xtraj(p.nx);
+    std::vector<double> utraj(p.nu);
 
     for (int k{0}; k < N_; k++)
     {
-        // Get the predicted state at time step k
-        ocp_nlp_out_get(&nlp_config[problem], &nlp_dims[problem], &nlp_out[problem], k, "x", &xtraj);
-        ocp_nlp_out_set(&nlp_config[problem], &nlp_dims[problem], &nlp_out[problem], k, "x", &xtraj);
-        // Get the predicted input at time step k
-        ocp_nlp_out_get(&nlp_config[problem], &nlp_dims[problem], &nlp_out[problem], k, "u", &utraj);
-        ocp_nlp_out_set(&nlp_config[problem], &nlp_dims[problem], &nlp_out[problem], k, "u", &utraj);
+        ocp_nlp_out_get(p.config, p.dims, p.out, k, "x", xtraj.data());
+        ocp_nlp_out_set(p.config, p.dims, p.out, k, "x", xtraj.data());
+        ocp_nlp_out_get(p.config, p.dims, p.out, k, "u", utraj.data());
+        ocp_nlp_out_set(p.config, p.dims, p.out, k, "u", utraj.data());
     }
 
-    // Get the predicted state at the last time step N
-    ocp_nlp_out_get(&nlp_config[problem], &nlp_dims[problem], &nlp_out[problem], N_, "x", &xtraj);
-    ocp_nlp_out_set(&nlp_config[problem], &nlp_dims[problem], &nlp_out[problem], N_, "x", &xtraj);
-
+    ocp_nlp_out_get(p.config, p.dims, p.out, N_, "x", xtraj.data());
+    ocp_nlp_out_set(p.config, p.dims, p.out, N_, "x", xtraj.data());
 }
 void acadosInterface::waitWorkers(){
     // it is implemented as a spin lock (not efficient but unblocking)
-    while(start_front.load() || start_back.load()){}
+    for (auto &entry : problems_)
+    {
+        while(entry.second->start.load()){}
+    }
 }
