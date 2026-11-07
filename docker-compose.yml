@@ -1,29 +1,40 @@
+x-sim: &sim
+  build: .
+  image: dwmpc
+  environment:
+    - DISPLAY=${DISPLAY}
+    - MUJOCO_GL=glfw
+  volumes:
+    - /tmp/.X11-unix:/tmp/.X11-unix
+  devices:
+    - /dev/dri:/dev/dri
+
+x-benchmark: &benchmark
+  build: .
+  image: dwmpc
+  environment:
+    - MUJOCO_GL=egl
+  volumes:
+    - ./benchmark:/opt/DWMPC/benchmark
+
+# Only sim_2problem starts with a plain `docker compose up`;
+# the other services are selected by name or profile.
 services:
-  dwmpc:
-    build: .
-    image: dwmpc
-    environment:
-      - DISPLAY=${DISPLAY}
-      - MUJOCO_GL=glfw
-    volumes:
-      - /tmp/.X11-unix:/tmp/.X11-unix
-    devices:
-      - /dev/dri:/dev/dri
+  sim_2problem:
+    <<: *sim
+    command: python3 example/sim_dwmpc.py
+
+  sim_4problem:
+    <<: *sim
+    profiles: [sim_4problem]
+    command: python3 example/sim_dwmpc.py --config config/config_4leg.yaml
 
   benchmark_2problem:
-    build: .
-    image: dwmpc
-    environment:
-      - MUJOCO_GL=egl
-    volumes:
-      - ./benchmark:/opt/DWMPC/benchmark
+    <<: *benchmark
+    profiles: [benchmark]
     command: python3 benchmark/bench_dwmpc.py --out benchmark/results_2problem.json
-  
+
   benchmark_4problem:
-    build: .
-    image: dwmpc
-    environment:
-      - MUJOCO_GL=egl
-    volumes:
-      - ./benchmark:/opt/DWMPC/benchmark
+    <<: *benchmark
+    profiles: [benchmark]
     command: python3 benchmark/bench_dwmpc.py --config config/config_4leg.yaml --out benchmark/results_4leg.json

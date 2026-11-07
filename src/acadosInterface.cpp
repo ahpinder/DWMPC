@@ -7,6 +7,11 @@
 #include "acados_solver_leg2.h"
 #include "acados_solver_leg3.h"
 
+#include <algorithm>
+#include <cerrno>
+#include <system_error>
+#include <time.h>
+
 #define SOLVER_OPS(NAME)                                                                                   \
     {#NAME, SolverOps{                                                                                     \
         []() { return static_cast<void *>(NAME##_acados_create_capsule()); },                              \
@@ -166,6 +171,7 @@ void acadosInterface::setReference(std::vector<std::vector<double>> &reference, 
  */
 void acadosInterface::runAll(int rti_phase)
 {
+    const auto start = timing_enabled_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     for (auto &entry : problems_)
     {
         Problem &p = *entry.second;
@@ -177,6 +183,21 @@ void acadosInterface::runAll(int rti_phase)
         entry.second->start.notify_one();
     }
     waitWorkers();
+    if (timing_enabled_)
+    {
+        last_timing_ = {};
+        last_timing_.wall_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
+        for (const auto &entry : problems_)
+        {
+            const Problem &p = *entry.second;
+            if (p.clock_error)
+                throw std::system_error(p.clock_error, std::generic_category(), "worker CPU clock");
+            last_timing_.worker_wall_sum_ms += p.wall_ms;
+            last_timing_.worker_wall_max_ms = std::max(last_timing_.worker_wall_max_ms, p.wall_ms);
+            last_timing_.worker_cpu_sum_ms += p.cpu_ms;
+        }
+    }
 }
 /**
  * Solve (feedback phase) all the problems.
@@ -199,8 +220,25 @@ void acadosInterface::work(Problem &p)
         p.start.wait(false);
         if(!run)
             break;
-        p.status = p.ops->solve(p.capsule);
+        if (timing_enabled_)
+        {
+            timespec cpu_start{}, cpu_end{};
+            p.clock_error = 0;
+            if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu_start) != 0)
+                p.clock_error = errno;
+            const auto start = std::chrono::steady_clock::now();
+            p.status = p.ops->solve(p.capsule);
+            const auto end = std::chrono::steady_clock::now();
+            if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu_end) != 0 && !p.clock_error)
+                p.clock_error = errno;
+            p.wall_ms = std::chrono::duration<double, std::milli>(end - start).count();
+            p.cpu_ms = (cpu_end.tv_sec - cpu_start.tv_sec) * 1000.0 +
+                       (cpu_end.tv_nsec - cpu_start.tv_nsec) / 1e6;
+        }
+        else
+            p.status = p.ops->solve(p.capsule);
         p.start.store(false);
+        p.start.notify_all(); // wake the thread sleeping in waitWorkers
     }
 }
 
@@ -250,9 +288,15 @@ void acadosInterface::warmstart(const std::string &problem)
     ocp_nlp_out_set(p.config, p.dims, p.out, N_, "x", xtraj.data());
 }
 void acadosInterface::waitWorkers(){
-    // it is implemented as a spin lock (not efficient but unblocking)
+    // spin briefly (the solves are short) and then sleep, so that on machines with fewer cores
+    // than threads the waiting thread does not steal the time of the workers
+    static const int spin_iterations = [](){
+        const char *value = std::getenv("DWMPC_SPIN");
+        return value ? std::atoi(value) : 2000;
+    }();
     for (auto &entry : problems_)
     {
-        while(entry.second->start.load()){}
+        for (int i{0}; i < spin_iterations && entry.second->start.load(); i++) {}
+        entry.second->start.wait(true);
     }
 }

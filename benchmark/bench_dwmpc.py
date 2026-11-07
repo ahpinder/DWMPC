@@ -3,6 +3,7 @@
 Usage: python3 benchmark/bench_dwmpc.py [--duration 20] [--warmup 50] [--vel 0.3] [--out results.json] [--config config/config_4leg.yaml]
 """
 import argparse
+import csv
 import json
 import os
 import platform
@@ -25,10 +26,14 @@ parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--config", default=None,
                     help="DWMPC config file, e.g. config/config_4leg.yaml for the 4 subproblems split (default: installed config.yaml, 2 subproblems)")
 parser.add_argument("--out", default=None, help="optional JSON output path")
+parser.add_argument("--timings", default=None,
+                    help="write detailed controller timings to this CSV and summarize them")
 args = parser.parse_args()
 
 if args.config:
     os.environ["DWMPC_CONFIG"] = os.path.abspath(args.config)
+if args.timings:
+    os.environ["DWMPC_TIMING_CSV"] = os.path.abspath(args.timings)
 
 np.random.seed(args.seed)
 decimation = int(round(args.sim_freq / args.mpc_freq))
@@ -96,6 +101,7 @@ for step in range(int(args.duration * args.sim_freq)):
 
 distance_x = float(env.mjData.qpos[0]) - start_x
 env.close()
+del mpc  # Close the buffered timing CSV before reading it.
 
 
 def stats(ns, period_ms):
@@ -135,6 +141,20 @@ result = {
     "quality": {"fell": fell, "sim_time_s": steps_done / args.sim_freq, "distance_x_m": distance_x},
 }
 
+if args.timings:
+    with open(args.timings, newline="") as f:
+        rows = list(csv.DictReader(f))
+    result["timing_breakdown"] = {}
+    for phase in ("solve", "prepare"):
+        phase_rows = [row for row in rows if row["phase"] == phase]
+        if len(phase_rows) != len(run_ns):
+            raise SystemExit(f"Expected {len(run_ns)} {phase} timing rows, got {len(phase_rows)}")
+        phase_rows = phase_rows[args.warmup:]
+        result["timing_breakdown"][phase] = {
+            key: float(np.mean([float(row[key]) for row in phase_rows]))
+            for key in phase_rows[0] if key != "phase"
+        }
+
 print(f"first (initialisation) call: {result['first_call_ms']:.1f} ms")
 print(f"MPC calls timed: {result['run']['n']} (period {period_ms:.1f} ms), fell={fell}, "
       f"distance_x={distance_x:.2f} m over {result['quality']['sim_time_s']:.1f} s")
@@ -142,6 +162,10 @@ for key in ("run", "prepare", "run_plus_prepare"):
     s = result[key]
     print(f"{key:>17}: mean {s['mean_ms']:.2f}  median {s['median_ms']:.2f}  p95 {s['p95_ms']:.2f}  "
           f"p99 {s['p99_ms']:.2f}  max {s['max_ms']:.2f} ms  over-period {100 * s['frac_over_period']:.1f}%")
+if args.timings:
+    print("Detailed timings (mean ms; worker times overlap and are not additive to phase wall time):")
+    for phase, values in result["timing_breakdown"].items():
+        print(f"  {phase}: " + ", ".join(f"{key}={value:.3f}" for key, value in values.items()))
 if args.out:
     with open(args.out, "w") as f:
         json.dump(result, f, indent=2)

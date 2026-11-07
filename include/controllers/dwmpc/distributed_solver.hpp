@@ -4,6 +4,7 @@
 #include <algorithm>
 #include "controllers/dwmpc/acadosInterface.hpp"
 #include <chrono>
+#include <fstream>
 
 class parameter
 {   public:
@@ -55,4 +56,5 @@ class dsolver {
         parameter solver_param_;
         std::map<std::string,pdata> data_;
         acadosInterface acados_interface_;
+        std::ofstream timing_file_;
 };

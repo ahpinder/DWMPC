@@ -1,9 +1,44 @@
 #include "controllers/dwmpc/distributed_solver.hpp"
 
+#include <cstdlib>
+#include <stdexcept>
+
+namespace {
+using Clock = std::chrono::steady_clock;
+double elapsedMs(Clock::time_point start)
+{
+    return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+}
+void addTiming(SolverTiming &total, const SolverTiming &sample)
+{
+    total.wall_ms += sample.wall_ms;
+    total.worker_wall_sum_ms += sample.worker_wall_sum_ms;
+    total.worker_wall_max_ms += sample.worker_wall_max_ms;
+    total.worker_cpu_sum_ms += sample.worker_cpu_sum_ms;
+}
+}
+
 dsolver::dsolver() : acados_interface_()
 {}
 void dsolver::init(const parameter &solver_param)
 {
+    if (timing_file_.is_open())
+    {
+        timing_file_.close();
+        if (!timing_file_)
+            throw std::runtime_error("Failed to close DWMPC timing CSV");
+    }
+    acados_interface_.enableTiming(false);
+    if (const char *path = std::getenv("DWMPC_TIMING_CSV"))
+    {
+        timing_file_.open(path);
+        if (!timing_file_)
+            throw std::runtime_error(std::string("Cannot open DWMPC timing CSV: ") + path);
+        timing_file_ << "phase,total_ms,shift_ms,setup_ms,internal_prepare_ms,feedback_ms,prediction_ms,consensus_ms,"
+                        "prepare_worker_wall_sum_ms,prepare_worker_wall_max_ms,prepare_worker_cpu_sum_ms,"
+                        "feedback_worker_wall_sum_ms,feedback_worker_wall_max_ms,feedback_worker_cpu_sum_ms\n";
+        acados_interface_.enableTiming(true);
+    }
     solver_param_ = solver_param;
     acados_interface_.init(solver_param_.N_, solver_param_.subsystems_name);
     //init to the dimension of data_ based on solver_param_
@@ -20,6 +55,11 @@ void dsolver::solve( bool &do_init,
                     const std::map<std::string,std::vector<std::vector<double>>> &param,
                     const std::map<std::string,std::vector<double>> &weight_vec) 
 {   
+    const bool timing = timing_file_.is_open();
+    const auto solve_start = timing ? Clock::now() : Clock::time_point{};
+    auto phase_start = solve_start;
+    double shift_ms = 0, setup_ms = 0, prediction_ms = 0, consensus_ms = 0;
+    SolverTiming internal_prepare, feedback;
     // init data to the reference 
     int max_iterations{1}; // maximum number of iteration for the distributed solver
     if (do_init)
@@ -91,6 +131,7 @@ void dsolver::solve( bool &do_init,
         max_iterations = 1;
     }
 
+    if (timing) { shift_ms = elapsedMs(phase_start); phase_start = Clock::now(); }
     // main loop  (number of iteration)
     for(auto i = 0; i < max_iterations;i++)
     {   
@@ -405,14 +446,17 @@ void dsolver::solve( bool &do_init,
             acados_interface_.setInitialCondition(problem_inital_condition,problem);    
             // acados_interface_.setConstraints(problem_constraints,static_cast<int>(problem_constraints[0].size()),static_cast<int>(problem_constraints[1].size()),problem);
         }
+        if (timing) { setup_ms += elapsedMs(phase_start); }
         
         //solve problems
         if(do_init || !solver_param_.receding_horizon)
         {
             acados_interface_.prepare();
+            if (timing) addTiming(internal_prepare, acados_interface_.lastTiming());
         }
         // acados_interface_.prepare();
         acados_interface_.solve();
+        if (timing) { addTiming(feedback, acados_interface_.lastTiming()); phase_start = Clock::now(); }
         
 
         
@@ -489,6 +533,7 @@ void dsolver::solve( bool &do_init,
             }
         }
 
+        if (timing) { prediction_ms += elapsedMs(phase_start); phase_start = Clock::now(); }
         // update whole body speeds
         for(int k{0};k<solver_param_.N_+1;k++)
         {
@@ -550,12 +595,33 @@ void dsolver::solve( bool &do_init,
         }
         // check stopping criteria
         //TODO
+        if (timing) { consensus_ms += elapsedMs(phase_start); phase_start = Clock::now(); }
     }
     do_init = false;
+    if (timing)
+    {
+        timing_file_ << "solve," << elapsedMs(solve_start) << ',' << shift_ms << ',' << setup_ms << ','
+                     << internal_prepare.wall_ms << ',' << feedback.wall_ms << ',' << prediction_ms << ','
+                     << consensus_ms << ',' << internal_prepare.worker_wall_sum_ms << ','
+                     << internal_prepare.worker_wall_max_ms << ',' << internal_prepare.worker_cpu_sum_ms << ','
+                     << feedback.worker_wall_sum_ms << ',' << feedback.worker_wall_max_ms << ','
+                     << feedback.worker_cpu_sum_ms << '\n';
+        if (!timing_file_)
+            throw std::runtime_error("Failed to write DWMPC timing CSV");
+    }
 }
 void dsolver::prepare()
 {
     acados_interface_.prepare();
+    if (timing_file_.is_open())
+    {
+        const auto &t = acados_interface_.lastTiming();
+        timing_file_ << "prepare," << t.wall_ms << ",0,0," << t.wall_ms << ",0,0,0,"
+                     << t.worker_wall_sum_ms << ',' << t.worker_wall_max_ms << ','
+                     << t.worker_cpu_sum_ms << ",0,0,0\n";
+        if (!timing_file_)
+            throw std::runtime_error("Failed to write DWMPC timing CSV");
+    }
 }
 void dsolver::getControl(std::vector<double> &des_q,std::vector<double> &des_dq,std::vector<double> &des_tau)
 {   

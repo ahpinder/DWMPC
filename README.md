@@ -25,8 +25,10 @@ A `Dockerfile` builds acados, ndcurves, DWMPC and `gym-quadruped` in one step (n
 ```bash
 docker build -t dwmpc .
 xhost +local:docker   # allow the container to open the MuJoCo viewer
-docker compose up     # runs example/sim_dwmpc.py with X11 forwarding
-docker compose run --rm benchmark   # headless timing benchmark -> benchmark/results.json
+docker compose up                          # simulation, 2 subproblems (example/sim_dwmpc.py, X11 forwarding)
+docker compose up sim_4problem             # simulation, 4 subproblems
+docker compose run --rm benchmark_2problem # headless timing benchmark -> benchmark/results_2problem.json
+docker compose run --rm benchmark_4problem # headless timing benchmark -> benchmark/results_4leg.json
 # or: docker run --rm -it dwmpc bash
 ```
 
@@ -105,7 +107,35 @@ and are linked in the same build. Select the split at runtime with the `DWMPC_CO
 ```bash
 python3 benchmark/bench_dwmpc.py                                      # 2 subproblems
 python3 benchmark/bench_dwmpc.py --config config/config_4leg.yaml     # 4 subproblems
+python3 example/sim_dwmpc.py --config config/config_4leg.yaml         # 4 subproblems in the viewer example
 ```
+With Docker, pick the split by service: `docker compose up` / `sim_2problem` (2 subproblems), `docker compose up sim_4problem` (4 subproblems), `benchmark_2problem` / `benchmark_4problem` for the benchmarks.
+
+### Detailed controller timings
+
+After rebuilding the controller, pass `--timings benchmark/timings.csv` to
+`benchmark/bench_dwmpc.py` to save a per-call CSV and include post-warmup
+mean timings in the benchmark output and optional JSON. For example:
+
+```bash
+docker compose run --rm benchmark_4problem python3 benchmark/bench_dwmpc.py \
+  --config config/config_4leg.yaml --timings benchmark/timings_4leg.csv \
+  --out benchmark/results_4leg.json
+```
+
+Alternatively, set `DWMPC_TIMING_CSV` to a writable path before constructing
+the controller. The file is truncated at initialization and buffered until the
+controller is destroyed; use a different file for each controller/process.
+The `solve` rows break down prediction shifting, subproblem setup, optional
+internal preparation, feedback dispatch/wait, prediction extraction, and
+consensus/dual updates. `prepare` rows measure preparation dispatch/wait.
+Worker wall times span each acados solve, including descheduling; summed
+thread CPU times exclude descheduling. These worker measurements overlap the
+dispatch/wait wall time and must not be added to it. Initialization may perform
+multiple iterations, so worker maxima in its row are summed across iterations.
+Instrumentation and CSV writes add overhead; disable timings for baseline
+latency comparisons. The Python `run` time includes additional controller and
+binding work outside the C++ distributed-solver breakdown.
 
 ## Citing this work
 

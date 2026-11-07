@@ -1,8 +1,17 @@
 from gym_quadruped.quadruped_env import QuadrupedEnv
 import pydwmpc
 import numpy as np
+import argparse
+import os
 import time
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--config", default=None,
+                    help="DWMPC config file, e.g. config/config_4leg.yaml for the 4 subproblems split (default: installed config.yaml, 2 subproblems)")
+args = parser.parse_args()
+
+if args.config:
+    os.environ["DWMPC_CONFIG"] = os.path.abspath(args.config)
 
 robot_name = "aliengo"   # "aliengo", "mini_cheetah", "go2", "hyqreal", ...
 scene_name = "flat"
@@ -14,7 +23,7 @@ robot_leg_joints = dict(FR=['FR_hip_joint', 'FR_thigh_joint', 'FR_calf_joint', ]
 mpc_frequency = 100.0
 state_observables_names = tuple(QuadrupedEnv.ALL_OBS)  # return all available state observables
 
-sim_frequency = 200.0
+sim_frequency = 1200.0
 env = QuadrupedEnv(robot=robot_name,
                    scene=scene_name,
                    sim_dt = 1/sim_frequency,  # Simulation time step [s]

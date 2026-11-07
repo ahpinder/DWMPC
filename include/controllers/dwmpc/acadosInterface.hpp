@@ -32,6 +32,14 @@ struct SolverOps
     void *(*get_opts)(void *capsule);
 };
 
+struct SolverTiming
+{
+    double wall_ms{0};
+    double worker_wall_sum_ms{0};
+    double worker_wall_max_ms{0};
+    double worker_cpu_sum_ms{0};
+};
+
 class acadosInterface {
     
     public:
@@ -49,6 +57,8 @@ class acadosInterface {
         void setReference(std::vector<std::vector<double>> &reference,const int n_ref0, const int n_ref, const int n_ref_e, const std::string &problem);
         void solve();
         void prepare();
+        void enableTiming(bool enabled) { timing_enabled_ = enabled; }
+        const SolverTiming &lastTiming() const { return last_timing_; }
         // getter
         void UpdatePrediction(std::vector<std::vector<double>> &x,std::vector<std::vector<double>> &u, const std::string &problem);   
 
@@ -67,6 +77,9 @@ class acadosInterface {
             int nx{0};
             int nu{0};
             int status{1};
+            double wall_ms{0};
+            double cpu_ms{0};
+            int clock_error{0};
             std::atomic_bool start{false};
             std::thread worker;
         };
@@ -74,6 +87,8 @@ class acadosInterface {
         std::map<std::string,std::unique_ptr<Problem>> problems_;
 
         int N_{0}; // prediction horizon
+        bool timing_enabled_{false};
+        SolverTiming last_timing_{};
 
         void work(Problem &problem);
         void runAll(int rti_phase);
